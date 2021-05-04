@@ -1,4 +1,5 @@
 #include "ChunkedAudioStream.h"
+#include "Logger.h"
 
 static size_t vorbisReadCb(void *ptr, size_t size, size_t nmemb, ChunkedAudioStream *self)
 {
@@ -30,7 +31,8 @@ static long vorbisTellCb(ChunkedAudioStream *self)
     return static_cast<long>(self->pos);
 }
 
-ChunkedAudioStream::~ChunkedAudioStream() {
+ChunkedAudioStream::~ChunkedAudioStream()
+{
 }
 
 ChunkedAudioStream::ChunkedAudioStream(std::vector<uint8_t> fileId, std::vector<uint8_t> audioKey, uint32_t duration, std::shared_ptr<MercuryManager> manager, uint32_t startPositionMs)
@@ -41,7 +43,6 @@ ChunkedAudioStream::ChunkedAudioStream(std::vector<uint8_t> fileId, std::vector<
     this->manager = manager;
     this->fileId = fileId;
     this->startPositionMs = startPositionMs;
-    pthread_mutex_init(&seekMutex, NULL);
 
     auto beginChunk = manager->fetchAudioChunk(fileId, audioKey, 0, 0x4000);
     beginChunk->keepInMemory = true;
@@ -64,12 +65,14 @@ ChunkedAudioStream::ChunkedAudioStream(std::vector<uint8_t> fileId, std::vector<
 
 void ChunkedAudioStream::seekMs(uint32_t positionMs)
 {
-    pthread_mutex_lock(&this->seekMutex);
+
+    this->seekMutex.lock();
     loadingMeta = true;
     ov_time_seek(&vorbisFile, positionMs);
     loadingMeta = false;
-    pthread_mutex_unlock(&this->seekMutex);
-    printf("--- Finished seeking!");
+    this->seekMutex.unlock();
+
+    CSPOT_LOG(debug, "--- Finished seeking!");
 }
 
 void ChunkedAudioStream::startPlaybackLoop()
@@ -79,7 +82,7 @@ void ChunkedAudioStream::startPlaybackLoop()
     isRunning = true;
 
     int32_t r = ov_open_callbacks(this, &vorbisFile, NULL, 0, vorbisCallbacks);
-    printf("--- Loaded file\n");
+    CSPOT_LOG(debug, "--- Loaded file");
     if (this->startPositionMs != 0)
     {
         ov_time_seek(&vorbisFile, startPositionMs);
@@ -96,9 +99,10 @@ void ChunkedAudioStream::startPlaybackLoop()
         if (!isPaused)
         {
             std::vector<uint8_t> pcmOut(4096 / 4);
-            pthread_mutex_lock(&this->seekMutex);
+
+            this->seekMutex.lock();
             long ret = ov_read(&vorbisFile, (char *)&pcmOut[0], 4096 / 4, &currentSection);
-            pthread_mutex_unlock(&this->seekMutex);
+            this->seekMutex.unlock();
             if (ret == 0)
             {
                 // and done :)
@@ -106,7 +110,7 @@ void ChunkedAudioStream::startPlaybackLoop()
             }
             else if (ret < 0)
             {
-                printf("Got em error in the stream\n");
+                CSPOT_LOG(error, "An error has occured in the stream");
 
                 // Error in the stream
             }
@@ -126,7 +130,7 @@ void ChunkedAudioStream::startPlaybackLoop()
 
     ov_clear(&vorbisFile);
     vorbisCallbacks = {};
-    printf("Track finished \n");
+    CSPOT_LOG(debug, "Track finished");
     finished = true;
 
     if (eof)
@@ -188,7 +192,7 @@ READ:
         if (pos >= fileSize)
         {
 
-            printf("EOL!\n");
+            CSPOT_LOG(debug, "EOL!");
             return res;
         }
 
@@ -223,7 +227,7 @@ READ:
         }
         else
         {
-            printf("Actual request %d\n", chunkIndex);
+            CSPOT_LOG(debug, "Actual request %d", chunkIndex);
             this->requestChunk(chunkIndex);
         }
     }
@@ -251,7 +255,7 @@ READ:
             else
             {
                 auto chunkReq = manager->fetchAudioChunk(fileId, audioKey, (pos + requestedOffset) / 4, (pos + requestedOffset + AUDIO_CHUNK_SIZE) / 4);
-                printf("Chunk req end pos %d\n", chunkReq->endPosition);
+                CSPOT_LOG(debug, "Chunk req end pos %d", chunkReq->endPosition);
                 this->chunks.push_back(chunkReq);
             }
         }
@@ -301,13 +305,13 @@ void ChunkedAudioStream::seek(size_t dpos, Whence whence)
 
         this->chunks.push_back(manager->fetchAudioChunk(fileId, audioKey, startPosition, startPosition + (AUDIO_CHUNK_SIZE / 4)));
     }
-    printf("Change in current chunk %d\n", currentChunk);
+    CSPOT_LOG(debug, "Change in current chunk %d", currentChunk);
 }
 
 std::shared_ptr<AudioChunk> ChunkedAudioStream::requestChunk(size_t chunkIndex)
 {
 
-    printf("Chunk Req %d\n", chunkIndex);
+    CSPOT_LOG(debug, "Chunk Req %d", chunkIndex);
     auto chunk = manager->fetchAudioChunk(fileId, audioKey, chunkIndex);
     this->chunks.push_back(chunk);
     return chunk;
